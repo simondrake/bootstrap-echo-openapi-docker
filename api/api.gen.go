@@ -98,8 +98,22 @@ func WithRequestEditorFn(fn RequestEditorFn) ClientOption {
 
 // The interface specification for the client above.
 type ClientInterface interface {
+	// RootV1 request
+	RootV1(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// TestV1 request
 	TestV1(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+}
+
+func (c *Client) RootV1(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRootV1Request(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
 }
 
 func (c *Client) TestV1(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -111,6 +125,33 @@ func (c *Client) TestV1(ctx context.Context, reqEditors ...RequestEditorFn) (*ht
 		return nil, err
 	}
 	return c.Client.Do(req)
+}
+
+// NewRootV1Request generates requests for RootV1
+func NewRootV1Request(server string) (*http.Request, error) {
+	var err error
+
+	queryUrl, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	basePath := fmt.Sprintf("/")
+	if basePath[0] == '/' {
+		basePath = basePath[1:]
+	}
+
+	queryUrl, err = queryUrl.Parse(basePath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryUrl.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
 }
 
 // NewTestV1Request generates requests for TestV1
@@ -184,8 +225,38 @@ func WithBaseURL(baseURL string) ClientOption {
 
 // ClientWithResponsesInterface is the interface specification for the client with responses above.
 type ClientWithResponsesInterface interface {
+	// RootV1 request
+	RootV1WithResponse(ctx context.Context) (*RootV1Response, error)
+
 	// TestV1 request
 	TestV1WithResponse(ctx context.Context) (*TestV1Response, error)
+}
+
+type RootV1Response struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+
+		// The message.
+		Message *string `json:"message,omitempty"`
+	}
+	JSONDefault *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r RootV1Response) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RootV1Response) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
 }
 
 type TestV1Response struct {
@@ -215,6 +286,15 @@ func (r TestV1Response) StatusCode() int {
 	return 0
 }
 
+// RootV1WithResponse request returning *RootV1Response
+func (c *ClientWithResponses) RootV1WithResponse(ctx context.Context) (*RootV1Response, error) {
+	rsp, err := c.RootV1(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRootV1Response(rsp)
+}
+
 // TestV1WithResponse request returning *TestV1Response
 func (c *ClientWithResponses) TestV1WithResponse(ctx context.Context) (*TestV1Response, error) {
 	rsp, err := c.TestV1(ctx)
@@ -222,6 +302,43 @@ func (c *ClientWithResponses) TestV1WithResponse(ctx context.Context) (*TestV1Re
 		return nil, err
 	}
 	return ParseTestV1Response(rsp)
+}
+
+// ParseRootV1Response parses an HTTP response from a RootV1WithResponse call
+func ParseRootV1Response(rsp *http.Response) (*RootV1Response, error) {
+	bodyBytes, err := ioutil.ReadAll(rsp.Body)
+	defer rsp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RootV1Response{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+
+			// The message.
+			Message *string `json:"message,omitempty"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
 }
 
 // ParseTestV1Response parses an HTTP response from a TestV1WithResponse call
@@ -264,6 +381,9 @@ func ParseTestV1Response(rsp *http.Response) (*TestV1Response, error) {
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 
+	// (GET /)
+	RootV1(ctx echo.Context) error
+
 	// (GET /v1/)
 	TestV1(ctx echo.Context) error
 }
@@ -271,6 +391,15 @@ type ServerInterface interface {
 // ServerInterfaceWrapper converts echo contexts to parameters.
 type ServerInterfaceWrapper struct {
 	Handler ServerInterface
+}
+
+// RootV1 converts echo context to params.
+func (w *ServerInterfaceWrapper) RootV1(ctx echo.Context) error {
+	var err error
+
+	// Invoke the callback with all the unmarshalled arguments
+	err = w.Handler.RootV1(ctx)
+	return err
 }
 
 // TestV1 converts echo context to params.
@@ -310,6 +439,7 @@ func RegisterHandlersWithBaseURL(router EchoRouter, si ServerInterface, baseURL 
 		Handler: si,
 	}
 
+	router.GET(baseURL+"/", wrapper.RootV1)
 	router.GET(baseURL+"/v1/", wrapper.TestV1)
 
 }
@@ -317,13 +447,13 @@ func RegisterHandlersWithBaseURL(router EchoRouter, si ServerInterface, baseURL 
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"H4sIAAAAAAAC/5RSvc7bMAx8FYHtaNjOl81bCnTIliHoUnRQZNpWYJMqxQQtAr97IdlBkqZLJ0nHHx3v",
-	"eAPHU2BC0gjNDaIbcLL5+lWEJV2CcEBRjxl23GI6O5bJKjTgSbcfUID+Drg8sUeBuYAJY7R9zl6DUcVT",
-	"D/NcgODPixdsofm+9Hzk/5hTgqeOU2mL0YkP6pmggd1hbwRjYIr+NKLpWIxjUuFx9NSbyBMaHTz1sTCW",
-	"2gVgHVBWOFH1OiY6X5g1qthgdoc9FHBFics3m7Iu6zQDByQbPDSwzVABweqQlaiumyqdPeo7T8WoBqkN",
-	"7ElLyI3EpuC+hQaOGPXbBpIMeZZF24+6XiQmRcpNbQijd7muOsfU+e7RuzNPcr9yOQ5o1mD5MOrJixXh",
-	"0xmdQlb/L9XN09twZ3RA8zIi5JrOXkb9rxE+C3bQwKfqsYfVuoTVsoH/oHMh/BXQKbYG7znzPP8JAAD/",
-	"/2J0v5vNAgAA",
+	"H4sIAAAAAAAC/+xSPY/bMAz9KwLb0bCdu83bFeiQ7VAcuhQdFJm2FdikSjFBi8D/vZDsIE7TDgU6drGl",
+	"xw89vscLOJ4CE5JGaC4Q3YCTzcePIizpEIQDinrMsOMW079jmaxCA570+QkK0B8Blyv2KDAXMGGMts/Z",
+	"azCqeOphngsQ/Hbygi00X5aet/yvc0rw1HEqbTE68UE9EzTw8ro3gjEwRX8Y0XQsxjGp8Dh66k3kCY0O",
+	"nvpYGEvtArAOKCucqHodE50PzBpVbDAvr3so4IwSl2d2ZV3WaQYOSDZ4aOA5QwUEq0NWokqfHvWRpDCr",
+	"QWoDe1LITcSm2L6FBj4x6+cdJAnyHIuuT3W9yEuKlHvaEEbvcl11jKnx1Z9HVzZS31N5G9CswfJm0saH",
+	"FeHDEZ1CVv4Xxc3mbrgzOqBRjJsJc01nT6P+1QjvBTto4F1128FqXcBq2b7f0DkRfg/oFFuD15y5gOq8",
+	"+7Mfd2zLB0PeMP435N8aMs8/AwAA///pc5S6WgQAAA==",
 }
 
 // GetSwagger returns the Swagger specification corresponding to the generated code

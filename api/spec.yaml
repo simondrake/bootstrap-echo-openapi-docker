@@ -5,6 +5,27 @@ info:
   title: Bootstrap API
   description: API responsible for controlling some things, and some other things
 paths:
+  /:
+    get:
+      description: root endpoint
+      operationId: rootV1
+      responses:
+        '200':
+          description: A description of the test endpoint
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    description: The message.
+        default:
+          description: unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/:
     get:
       description: test endpoint.
