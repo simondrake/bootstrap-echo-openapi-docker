@@ -13,3 +13,7 @@ openapi:
 .PHONY: local
 local:
 	go run cmd/api/main.go
+
+.PHONY: docker-build
+docker-build:
+	docker build -t bootstrap-echo-openapi-docker .

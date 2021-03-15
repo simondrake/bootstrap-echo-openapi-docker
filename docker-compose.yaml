@@ -1,0 +1,8 @@
+---
+version: "2.1"
+services:
+  app:
+    image: omisnomis/bootstrap-echo-openapi-docker
+    ports:
+      - 8112:8112
+    restart: unless-stopped
