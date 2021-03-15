@@ -1,0 +1,41 @@
+---
+openapi: "3.0.0"
+info:
+  version: 1.0.0
+  title: Bootstrap API
+  description: API responsible for controlling some things, and some other things
+paths:
+  /v1/:
+    get:
+      description: test endpoint.
+      operationId: testV1
+      responses:
+        '200':
+          description: A description of the test endpoint
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    description: The message.
+        default:
+          description: unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    Error:
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: integer
+          format: int32
+        message:
+          type: string
